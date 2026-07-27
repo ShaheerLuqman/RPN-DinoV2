@@ -40,15 +40,92 @@ class Embedder:
         return normalize(np.vstack(out).astype(np.float32), norm="l2")
 
 
-def crop_boxes(img_bgr: np.ndarray, boxes_xyxy, min_px: int = 8):
-    """Return (PIL RGB crops, kept_box_indices) skipping degenerate/tiny boxes."""
+class BoxMasker:
+    """Box-prompted SAM2 -> per-box binary mask (ultralytics SAM).
+
+    Mirrors the proven acp-agentic-workflow `Sam2Masker`: prompt the whole frame
+    with all boxes at once, then read `r.masks.data` aligned to the input box order.
+    Used by Phase 2 to suppress background before DINOv2 embeds each crop."""
+
+    def __init__(self, weights, device: str = "0"):
+        from ultralytics import SAM
+        self.weights = Path(weights)
+        self.model = SAM(str(weights))
+        self.device = device
+        self._mm = None                         # lazy multimask predictor
+
+    def masks_for(self, source, boxes_xyxy):
+        """Return a list aligned to boxes_xyxy; each entry is a HxW uint8 mask or None."""
+        if len(boxes_xyxy) == 0:
+            return []
+        r = self.model.predict(source, bboxes=np.asarray(boxes_xyxy, np.float32),
+                               device=self.device, verbose=False)[0]
+        if r.masks is None:
+            return [None] * len(boxes_xyxy)
+        data = r.masks.data.cpu().numpy()
+        return [(data[i] > 0).astype(np.uint8) if i < len(data) else None
+                for i in range(len(boxes_xyxy))]
+
+    def _multimask_predictor(self):
+        """Lazily build the low-level SAM predictor used for per-box multimask output.
+        The high-level `SAM.predict` NMS-merges masks across all box prompts, which
+        loses per-box attribution; the predictor lets us prompt one box at a time."""
+        if self._mm is None:
+            name = self.weights.name.lower()
+            if "sam2" in name:
+                from ultralytics.models.sam import SAM2Predictor as P
+            else:
+                from ultralytics.models.sam import Predictor as P
+            self._mm = P(overrides=dict(task="segment", mode="predict",
+                                        model=str(self.weights), save=False,
+                                        verbose=False, imgsz=1024, device=self.device))
+        return self._mm
+
+    def multi_masks_for(self, source, boxes_xyxy):
+        """Per-box multimask: return a list aligned to boxes_xyxy, each entry a list of
+        (HxW uint8 mask, quality_score) candidates for that box — SAM's whole/part/subpart
+        hierarchy. Reveals composite objects (e.g. a hand+tool box yielding several masks).
+        Each box is prompted separately so masks stay attributed to their box."""
+        if len(boxes_xyxy) == 0:
+            return []
+        pred = self._multimask_predictor()
+        img = cv2.imread(str(source)) if isinstance(source, (str, Path)) else source
+        pred.set_image(img)
+        out = []
+        for b in boxes_xyxy:
+            r = pred(bboxes=np.asarray([b], np.float32), multimask_output=True)[0]
+            if r.masks is None:
+                out.append([])
+                continue
+            data = r.masks.data.cpu().numpy()
+            scores = (r.boxes.conf.cpu().numpy() if r.boxes is not None
+                      else np.ones(len(data), np.float32))
+            out.append([((data[i] > 0).astype(np.uint8), float(scores[i]))
+                        for i in range(len(data))])
+        return out
+
+
+def crop_boxes(img_bgr: np.ndarray, boxes_xyxy, min_px: int = 8, masks=None):
+    """Return (PIL RGB crops, kept_box_indices) skipping degenerate/tiny boxes.
+
+    When `masks` is given (list aligned to boxes_xyxy, each a HxW mask or None), the
+    background inside a crop is zeroed before conversion — the acp background-suppression
+    recipe, so DINOv2 embeds the object shape rather than the box's surroundings."""
     H, W = img_bgr.shape[:2]
     crops, keep = [], []
     for i, (x1, y1, x2, y2) in enumerate(boxes_xyxy):
         xi1, yi1 = max(0, int(round(x1))), max(0, int(round(y1)))
         xi2, yi2 = min(W, int(round(x2))), min(H, int(round(y2)))
         if xi2 - xi1 >= min_px and yi2 - yi1 >= min_px:
-            rgb = cv2.cvtColor(img_bgr[yi1:yi2, xi1:xi2], cv2.COLOR_BGR2RGB)
+            sub = img_bgr[yi1:yi2, xi1:xi2].copy()
+            m = None if masks is None else masks[i]
+            if m is not None:
+                if m.shape[:2] != (H, W):        # SAM masks may return at model res
+                    m = cv2.resize(m.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST)
+                m = m[yi1:yi2, xi1:xi2]
+                if m.shape[:2] == sub.shape[:2]:
+                    sub[m == 0] = 0
+            rgb = cv2.cvtColor(sub, cv2.COLOR_BGR2RGB)
             crops.append(Image.fromarray(rgb))
             keep.append(i)
     return crops, keep
@@ -66,8 +143,13 @@ def read_gt(txt: Path, W: int, H: int):
     return out
 
 
-def build_reference(cfg, embedder: Embedder, ref_stems: list[str], rebuild: bool = False):
-    """Embed the GT crops of the reference frames -> (Xr, yr), cached under work_dir."""
+def build_reference(cfg, embedder: Embedder, ref_stems: list[str], rebuild: bool = False,
+                    masker: "BoxMasker | None" = None):
+    """Embed the GT crops of the reference frames -> (Xr, yr), cached under work_dir.
+
+    When `masker` is given, background is SAM-suppressed before embedding — this must
+    match how query crops are built at inference so reference and query live in the
+    same (masked or unmasked) embedding space."""
     cache = cfg.reference_cache
     if cache.exists() and not rebuild:
         d = np.load(cache)
@@ -75,12 +157,15 @@ def build_reference(cfg, embedder: Embedder, ref_stems: list[str], rebuild: bool
     images_dir, ext = cfg.images_dir, cfg.data.image_ext
     crops, labels = [], []
     for k, s in enumerate(ref_stems):
-        img = cv2.imread(str(images_dir / f"{s}.{ext}"))
+        path = images_dir / f"{s}.{ext}"
+        img = cv2.imread(str(path))
         if img is None:
             continue
         H, W = img.shape[:2]
         gt = read_gt(images_dir / f"{s}.txt", W, H)
-        cc, keep = crop_boxes(img, [(g[1], g[2], g[3], g[4]) for g in gt], cfg.phase2.min_box_px)
+        boxes = [(g[1], g[2], g[3], g[4]) for g in gt]
+        masks = masker.masks_for(str(path), boxes) if masker is not None else None
+        cc, keep = crop_boxes(img, boxes, cfg.phase2.min_box_px, masks=masks)
         crops += cc
         labels += [gt[i][0] for i in keep]
         if (k + 1) % 200 == 0:

@@ -17,7 +17,7 @@ from .metrics import BoxEval, iou_matrix
 from .phase1 import (build_proposer, build_visual_exemplars, is_frcnn, is_multiclass,
                      is_training_free, proposer_kind, train_detector)
 from ultralytics import YOLO, RTDETR
-from .phase2 import Embedder, build_reference, classify_knn, crop_boxes, read_gt
+from .phase2 import BoxMasker, Embedder, build_reference, classify_knn, crop_boxes, read_gt
 from .visualize import render_video
 
 
@@ -81,10 +81,19 @@ def train(cfg: Config):
     return best
 
 
+def _build_masker(cfg: Config) -> BoxMasker | None:
+    """SAM2 box->mask suppressor for Phase 2, or None when `phase2.mask` is off."""
+    if not bool(getattr(cfg.phase2, "mask", False)):
+        return None
+    weights = cfg.resolve(getattr(cfg.phase2, "mask_model", "weights/sam2.1_b.pt"))
+    print(f"[phase2] background masking ON — SAM2 {weights.name}")
+    return BoxMasker(weights, cfg.phase1.device)
+
+
 def reference(cfg: Config, rebuild: bool = False):
     _, annotated, *_ = _splits(cfg)
     emb = Embedder(cfg.phase2.embed_model, cfg.phase1.device)
-    Xr, yr = build_reference(cfg, emb, annotated, rebuild=rebuild)
+    Xr, yr = build_reference(cfg, emb, annotated, rebuild=rebuild, masker=_build_masker(cfg))
     _check_label_ids(cfg, yr)
     print(f"[reference] {len(yr)} crops from {len(annotated)} annotated frames -> {cfg.reference_cache}")
     return Xr, yr
@@ -153,7 +162,8 @@ def infer(cfg: Config, weights: Path | None = None) -> dict:
             raise FileNotFoundError(f"detector weights not found: {w} (run `train` first)")
         proposer = build_proposer(cfg, w)
     emb = Embedder(cfg.phase2.embed_model, cfg.phase1.device)
-    Xr, yr = build_reference(cfg, emb, annotated)
+    masker = _build_masker(cfg)
+    Xr, yr = build_reference(cfg, emb, annotated, masker=masker)
     _check_label_ids(cfg, yr)
     images_dir, ext = cfg.images_dir, cfg.data.image_ext
 
@@ -163,7 +173,8 @@ def infer(cfg: Config, weights: Path | None = None) -> dict:
         batch = eval_target[i:i + 64]
         paths = [str(images_dir / f"{s}.{ext}") for s in batch]
         for s, (boxes, confs, img, _shape) in zip(batch, proposer.propose(paths)):
-            cc, keep = crop_boxes(img, boxes, cfg.phase2.min_box_px)
+            masks = masker.masks_for(str(images_dir / f"{s}.{ext}"), boxes) if masker else None
+            cc, keep = crop_boxes(img, boxes, cfg.phase2.min_box_px, masks=masks)
             base = len(crops)
             crops += cc
             pos = {bi: base + ci for ci, bi in enumerate(keep)}
@@ -320,6 +331,24 @@ def evaluate(cfg: Config) -> str:
 
 def visualize(cfg: Config):
     return render_video(cfg)
+
+
+def visualize_masks(cfg: Config):
+    """Render a standalone SAM-mask video from predictions.json. Runs SAM regardless
+    of `phase2.mask`, since it only needs the predicted boxes as prompts.
+
+    Default: one mask per box, colored by class (`render_mask_video`).
+    `visualize.mask_multi: true`: per-box multimask — each box's whole/part/subpart
+    candidates drawn in distinct colors, to see composite classes decompose into
+    several objects (`render_multimask_video`)."""
+    from .visualize import render_mask_video, render_multimask_video
+    weights = cfg.resolve(getattr(cfg.phase2, "mask_model", "weights/sam2.1_b.pt"))
+    masker = BoxMasker(weights, cfg.phase1.device)
+    if bool(getattr(cfg.visualize, "mask_multi", False)):
+        print(f"[visualize-masks] SAM {weights.name} multimask (per-box whole/part/subpart)")
+        return render_multimask_video(cfg, masker)
+    print(f"[visualize-masks] SAM {weights.name} on predicted boxes (one mask/box)")
+    return render_mask_video(cfg, masker)
 
 
 def run_all(cfg: Config):

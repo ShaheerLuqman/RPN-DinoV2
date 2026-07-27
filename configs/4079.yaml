@@ -40,6 +40,8 @@ phase2:
   batch: 64
   hf_offline: true                    # DINOv2 from local cache; false to allow download
   reject_below: 0.5                   # drop proposals with nearest-ref sim < this (0 = keep all)
+  mask: false                         # SAM2 box->mask, zero background before DINOv2 (writes to *_mask run)
+  mask_model: weights/sam2.1_b.pt     # box-prompt segmenter for masking
 
 infer:
   conf: 0.1                           # lower = more recall

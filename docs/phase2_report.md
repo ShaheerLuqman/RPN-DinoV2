@@ -406,6 +406,52 @@ using one example budget for everyone.
 
 ---
 
+## Does masking out the background help?
+
+Every crop we compare is a **rectangle** — so it always contains some background
+around the object (shelf, bench, the operator's sleeve). Does that background help
+the computer (useful context) or hurt it (distraction)? We tested this by using
+**SAM2** to trace the exact object outline inside each box and **blanking everything
+outside it** (setting the background to black) before measuring appearance. The
+object crops are otherwise identical; only the surroundings change. Reference and
+test crops were masked the same way so the comparison stays fair.
+
+We ran it on two datasets to see where masking pays off:
+
+| Dataset | | Overall accuracy | Fair-average accuracy |
+|---|---|---:|---:|
+| **4079 End-Stop** (6 classes, tight boxes) | raw crop | 99.5% | 98.97% |
+| | background masked | 99.2% | 98.95% |
+| **gas_valve** (27 classes, hands & tools) | raw crop | 96.6% | 80.7% |
+| | **background masked** | 96.2% | **83.0%** |
+
+*(Naming-only test, same as the rest of this report: human-drawn boxes so any change
+is purely a naming effect. gas_valve reference = 1,500 annotated frames; the raw-crop
+row matches the 1,500-frame result in the sampling table above.)*
+
+**What this shows — it depends entirely on the dataset:**
+
+- **On 4079, masking does nothing** (a one-crop difference either way). The boxes are
+  tight, the objects fill them, and naming is already near-perfect — there is no
+  background problem to fix and no headroom to gain.
+- **On gas_valve, masking helps the classes that matter most.** Overall accuracy dips
+  a trivial 0.4 point, but **fair-average rises +2.3 points (80.7 → 83.0)**. The two
+  numbers move in opposite directions on purpose: *overall* is dominated by the common,
+  easy classes (bins, hands), which lose a hair; *fair-average* weights every class
+  equally, so it reflects the **rare, look-alike "hand-with-a-tool" classes** — and
+  those improve, because a cluttered, ever-changing background was leaking into their
+  appearance and pulling the vote toward the wrong neighbor. Blanking it out lets the
+  object itself carry the decision.
+
+**Takeaway:** background masking is **worth enabling when classes are many, confusable,
+and background-heavy** (like gas_valve) and you care about per-class accuracy — it lifts
+the hard tail at negligible cost to the easy classes. It is **not worth it when boxes
+are already tight and naming is near-ceiling** (like 4079): no gain, and it roughly
+doubles compute (a SAM2 pass per frame). It is off by default and enabled per-dataset
+with `phase2.mask: true` (writes to a separate `*_mask` run so baselines are untouched).
+
+---
+
 ## Bottom line
 
 1. **Automatic naming is ready** for the clearly-different objects (bins, parts,

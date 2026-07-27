@@ -45,6 +45,8 @@ class Config:
               .replace("{proposer}", proposer))
         if p1.get("multiclass") and not wd.endswith("_mc"):
             wd += "_mc"                    # multi-class run (Phase 2 skipped)
+        if (self.raw.get("phase2") or {}).get("mask") and not wd.endswith("_mask"):
+            wd += "_mask"                  # Phase-2 SAM background masking (separate cache)
         self.work = self.resolve(wd)
         self.work.mkdir(parents=True, exist_ok=True)
         self.images_dir = self.resolve(self.data.images_dir)

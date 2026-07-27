@@ -2,7 +2,7 @@
 
 project:
   root: auto                          # parent of configs/
-  work_dir: runs/gas_valve_{frames}_{proposer}
+  work_dir: runs/gas_valve_{frames}_{proposer}_SAM_DINOv2
 
 data:
   images_dir: datasets/gas_valve_2view
@@ -40,6 +40,8 @@ phase2:
   batch: 64
   hf_offline: true                    # DINOv2 from local cache; false to allow download
   reject_below: 0.5                   # drop proposals with nearest-ref sim < this (0 = keep all)
+  mask: true                          # SAM2 box->mask, zero background before DINOv2 (writes to *_mask run)
+  mask_model: weights/sam2.1_b.pt     # box-prompt segmenter for masking
 
 infer:
   conf: 0.1                           # lower = more recall
@@ -54,3 +56,5 @@ visualize:
   limit: -1                           # -1 = all scored frames
   crf: 28                             # lower = better/larger
   show_conf: false
+  mask_multi: false                   # visualize-masks: false = 1 mask/box (per-class color);
+                                      # true = per-box multimask (whole/part/subpart, *_masks_multi.mp4)

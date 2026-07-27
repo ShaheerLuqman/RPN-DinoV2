@@ -2,7 +2,7 @@
 
     python -m pipeline.cli <step> --config configs/gas_valve.yaml
 
-steps: prepare | train | reference | infer | evaluate | visualize | all
+steps: prepare | train | reference | infer | evaluate | visualize | visualize-masks | all
 
 The configured `phase1.device` is pinned via CUDA_VISIBLE_DEVICES *before* torch is
 imported, and every stage then uses local index 0 — this avoids the device-ordinal
@@ -21,7 +21,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", choices=["prepare", "train", "reference", "infer",
-                                     "evaluate", "visualize", "all"])
+                                     "evaluate", "visualize", "visualize-masks", "all"])
     ap.add_argument("--config", required=True, help="path to a YAML config")
     ap.add_argument("--weights", default=None, help="detector weights for `infer`")
     ap.add_argument("--rebuild", action="store_true", help="rebuild the Phase-2 reference cache")
@@ -52,6 +52,7 @@ def main(argv=None) -> int:
         "infer": lambda: P.infer(cfg, weights=args.weights),
         "evaluate": lambda: P.evaluate(cfg),
         "visualize": lambda: P.visualize(cfg),
+        "visualize-masks": lambda: P.visualize_masks(cfg),
         "all": lambda: P.run_all(cfg),
     }
     steps[args.step]()
