@@ -1,14 +1,14 @@
-# Pipeline config — "4079 End Stop Verification" · 2,200 frames · 640x480 · 6 classes
+# Pipeline config — doosan_swivel · 22,889 frames · 53 classes
 
 project:
   root: auto
-  work_dir: runs/4079_{frames}_{proposer}
+  work_dir: runs/doosan_swivel_{frames}_{proposer}
 
 data:
-  images_dir: "datasets/4079 End Stop Verification"
-  image_ext: png
-  classes_file: "datasets/4079 End Stop Verification/classes.txt"
-  annotation_frames: 300
+  images_dir: "datasets/doosan_swivel"
+  image_ext: jpg
+  classes_file: "datasets/doosan_swivel/classes.txt"
+  annotation_frames: 1000
   eval_frames: -1                     # remaining to score (-1 = all)
   monitor_val: 200
   sampling: even                      # even | random
