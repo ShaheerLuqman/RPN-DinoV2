@@ -176,24 +176,34 @@ def build_reference(cfg, embedder: Embedder, ref_stems: list[str], rebuild: bool
     return Xr, yr
 
 
-def classify_knn(Xq: np.ndarray, Xr: np.ndarray, yr: np.ndarray, k: int = 5):
+def classify_knn(Xq: np.ndarray, Xr: np.ndarray, yr: np.ndarray, k: int = 5,
+                 return_votes: bool = False):
     """Distance-weighted kNN vote.
     Returns (pred_class_ids, vote_confidence[0..1], top_similarity[0..1]) where
     top_similarity is the cosine similarity to the single nearest reference crop —
-    the signal for "does this crop resemble any known object" (used by the reject gate)."""
+    the signal for "does this crop resemble any known object" (used by the reject gate).
+
+    When `return_votes`, also returns a list of {class_id: normalized_weight} per
+    query — the full per-class vote distribution, used to fuse this namer's opinion
+    with another one (e.g. a multiclass YOLO head) at inference time."""
     if len(Xq) == 0:
-        return np.array([], int), np.array([], float), np.array([], float)
+        empty = (np.array([], int), np.array([], float), np.array([], float))
+        return (*empty, []) if return_votes else empty
     k = min(k, len(Xr))
     nn = NearestNeighbors(n_neighbors=k, metric="cosine").fit(Xr)
     dist, idx = nn.kneighbors(Xq)
     sims = 1.0 - dist
-    preds, conf, topsim = [], [], []
+    preds, conf, topsim, votes_out = [], [], [], []
     for row_s, row_i in zip(sims, idx):
         votes = defaultdict(float)
         for s, j in zip(row_s, row_i):
             votes[int(yr[j])] += max(s, 0.0)
         c = max(votes, key=votes.get)
         preds.append(c)
-        conf.append(votes[c] / (row_s.clip(min=0).sum() + 1e-9))
+        total = row_s.clip(min=0).sum() + 1e-9
+        conf.append(votes[c] / total)
         topsim.append(float(row_s.max()))
-    return np.array(preds, int), np.array(conf, float), np.array(topsim, float)
+        if return_votes:
+            votes_out.append({cc: v / total for cc, v in votes.items()})
+    out = (np.array(preds, int), np.array(conf, float), np.array(topsim, float))
+    return (*out, votes_out) if return_votes else out

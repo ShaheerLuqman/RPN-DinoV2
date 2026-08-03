@@ -7,6 +7,7 @@ Expects a flat directory of images (`*.png`) each with a sibling YOLO label file
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +56,18 @@ def _read_label(txt: Path) -> list[list[str]]:
     return [p for p in (ln.split() for ln in txt.read_text().splitlines()) if len(p) == 5]
 
 
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Symlink `dst` -> `src`; fall back to a hardlink, then a plain copy,
+    when symlinks aren't permitted (e.g. Windows without Developer Mode)."""
+    try:
+        os.symlink(src, dst)
+    except OSError:
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+
+
 def build_yolo_dataset(images_dir: Path, ext: str, train_stems: list[str],
                        val_stems: list[str], out_dir: Path,
                        single_cls: bool = True, names: list[str] | None = None) -> Path:
@@ -69,7 +82,7 @@ def build_yolo_dataset(images_dir: Path, ext: str, train_stems: list[str],
             link = out_dir / "images" / split / f"{s}.{ext}"
             if link.exists() or link.is_symlink():
                 link.unlink()
-            os.symlink((images_dir / f"{s}.{ext}").resolve(), link)
+            _link_or_copy((images_dir / f"{s}.{ext}").resolve(), link)
             lines = [f"{'0' if single_cls else p[0]} {' '.join(p[1:])}"
                      for p in _read_label(images_dir / f"{s}.txt")]
             (out_dir / "labels" / split / f"{s}.txt").write_text("\n".join(lines))

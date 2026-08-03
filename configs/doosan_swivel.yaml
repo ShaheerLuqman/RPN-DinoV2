@@ -25,9 +25,9 @@ phase1:
   yoloe_model: weights/yoloe-11l-seg.pt
   yoloe_refer_frames: 3
   frcnn_backbone: resnet101           # resnet50 | resnet50-v2 | resnet101 (bigger)
-  imgsz: 640
-  epochs: 30
-  batch: 16
+  imgsz: 1280                         # native long side (1280x480 frames) — no downscale loss for small boxes
+  epochs: 15
+  batch: 4                            # dropped from 16: imgsz 640->1280 is ~4x the VRAM/step
   patience: 20
   close_mosaic: 10
   amp: true
@@ -42,10 +42,13 @@ phase2:
   reject_below: 0.5                   # drop proposals with nearest-ref sim < this (0 = keep all)
   mask: false                         # SAM2 box->mask, zero background before DINOv2 (writes to *_mask run)
   mask_model: weights/sam2.1_b.pt     # box-prompt segmenter for masking
+  fuse_multiclass: true              # true: also run Phase 2 under phase1.multiclass, storing
+                                      # YOLO+DINOv2 raw signals so `evaluate` can fuse them as
+                                      # w*yolo + (1-w)*dino; report always includes a w=0..1 sweep
 
 infer:
-  conf: 0.1                           # lower = more recall
-  iou_nms: 0.7
+  conf: 0.4                           # lower = more recall
+  iou_nms: 0.3
   max_det: 300
 
 eval:

@@ -10,6 +10,10 @@ grouping, no --video tags needed downstream.
                  ├─>  <dst>/000001.jpg, 000001.txt, ...
     <src>/val/   ┘
 
+Every staged frame is written out as .jpg — non-jpg sources (e.g. .png) are
+decoded and re-encoded to JPEG, not just renamed, so the staged dataset is
+uniformly one image format.
+
 Only *complete image+label pairs* are staged: an image is staged together
 with its sibling YOLO *.txt label, and only if both exist and the label has
 at least one annotation. Orphan images (no label), orphan labels (no image)
@@ -39,13 +43,29 @@ import re
 import shutil
 from pathlib import Path
 
+from PIL import Image
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = REPO_ROOT / "datasets" / "Doosan Swivel E32-E60"
 DEFAULT_DST = REPO_ROOT / "datasets" / "doosan_swivel"
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png")
+JPEG_QUALITY = 95
 # "<name>_frame_000205" or "<name>.mp4_1000" / "<name>.mkv_1000"
 FRAME_RE = re.compile(r"^(.*?)(?:_frame_(\d+)|\.(?:mp4|mkv)_(\d+))$")
+
+
+def _stage_image(src: Path, dst: Path, move: bool) -> bool:
+    """Stage one image as .jpg at `dst`. Returns True if it was re-encoded
+    (non-jpg source), False if it was a plain jpg copy/move."""
+    if src.suffix.lower() in (".jpg", ".jpeg"):
+        (shutil.move if move else shutil.copy2)(str(src), str(dst))
+        return False
+    with Image.open(src) as im:
+        im.convert("RGB").save(dst, "JPEG", quality=JPEG_QUALITY)
+    if move:
+        src.unlink()
+    return True
 
 
 def _is_classes_file(name: str) -> bool:
@@ -172,20 +192,25 @@ def main() -> int:
     print(f"{verb} '{src_root.name}' from {src_root}  ->  {dst}  "
           f"({len(all_pairs)} pairs, renamed to sequential 000001.jpg/.txt)")
 
+    converted = 0
     if not args.dry_run:
         xfer = shutil.move if args.move else shutil.copy2
         for i, (stem, img, lbl) in enumerate(all_pairs, start=1):
-            xfer(str(img), str(dst / f"{i:06d}{img.suffix.lower()}"))
+            if _stage_image(img, dst / f"{i:06d}.jpg", args.move):
+                converted += 1
             xfer(str(lbl), str(dst / f"{i:06d}.txt"))
         if classes is not None:
             xfer(str(classes), str(dst / "classes.txt"))
+    else:
+        converted = sum(1 for _, img, _ in all_pairs if img.suffix.lower() not in (".jpg", ".jpeg"))
 
     print(f"\nStaged '{src_root.name}' -> {dst}")
     print(f"total: {len(all_pairs)} complete pairs staged (000001..{len(all_pairs):06d}); "
           f"skipped {tot_orphan_images} orphan images + {tot_orphan_labels} orphan labels + "
           f"{tot_empty_labels} empty labels"
           + (f" + {dup_across_splits} duplicate stems across splits" if dup_across_splits else "")
-          + (f"; {len(all_img_conflicts)} jpg/png name conflicts (jpg kept)" if all_img_conflicts else ""))
+          + (f"; {len(all_img_conflicts)} jpg/png name conflicts (jpg kept)" if all_img_conflicts else "")
+          + (f"; {converted} non-jpg images {'would be ' if args.dry_run else ''}re-encoded to jpg" if converted else ""))
     if classes is not None:
         print(f"classes.txt {'would be ' if args.dry_run else ''}copied from {classes.name}")
     else:

@@ -99,8 +99,24 @@ def reference(cfg: Config, rebuild: bool = False):
     return Xr, yr
 
 
+def _fuse_cls(yolo_cls: int, yolo_conf: float, dino_votes: dict, w: float) -> int:
+    """argmax_c [ w*yolo_conf if c==yolo_cls else 0 ] + [ (1-w)*dino_votes.get(c, 0) ]."""
+    scores = {int(c): (1 - w) * v for c, v in dino_votes.items()}
+    scores[yolo_cls] = scores.get(yolo_cls, 0.0) + w * yolo_conf
+    return max(scores, key=scores.get)
+
+
+_DEFAULT_FUSE_WEIGHT = 1.0    # pure YOLO — matches pre-fusion behavior for the stored "cls"/"name"
+
+
 def _infer_multiclass(cfg: Config, eval_target, weights) -> dict:
-    """Multi-class detector names boxes itself — Phase 2 skipped."""
+    """Multi-class detector names boxes itself. When `phase2.fuse_multiclass` is set,
+    Phase 2 (DINOv2 kNN) also runs on the same crops, and both raw signals — the YOLO
+    class+confidence and the DINOv2 vote distribution — are stored per box so
+    `evaluate` can blend them post-hoc (via its `weight` arg, or the w=0..1 sweep table
+    it always appends) without re-running detection or embedding. The stored
+    "cls"/"name" fields themselves are baked at `_DEFAULT_FUSE_WEIGHT` (pure YOLO) —
+    there's no persisted config knob to keep in sync with the sweep results."""
     if proposer_kind(cfg) not in ("yolo11l", "yolo11x"):
         raise ValueError(f"phase1.multiclass needs a YOLO proposer "
                          f"(yolo11l/yolo11x), not '{proposer_kind(cfg)}'")
@@ -110,8 +126,21 @@ def _infer_multiclass(cfg: Config, eval_target, weights) -> dict:
     model = (RTDETR if cfg.phase1.rtdetr else YOLO)(str(w))
     classes = cfg.classes
     images_dir, ext = cfg.images_dir, cfg.data.image_ext
-    print(f"[infer] multi-class detector (Phase 2 skipped) on {len(eval_target)} frames ...")
+
+    fuse = bool(getattr(cfg.phase2, "fuse_multiclass", False))
+    emb = masker = Xr = yr = None
+    if fuse:
+        _, annotated, *_ = _splits(cfg)
+        emb = Embedder(cfg.phase2.embed_model, cfg.phase1.device)
+        masker = _build_masker(cfg)
+        Xr, yr = build_reference(cfg, emb, annotated, masker=masker)
+        _check_label_ids(cfg, yr)
+
+    print(f"[infer] multi-class detector"
+          + (" + Phase-2 DINOv2 fusion" if fuse else " (Phase 2 skipped)")
+          + f" on {len(eval_target)} frames ...")
     preds = {}
+    crops_all, box_meta = [], []          # only populated when fuse=True
     for i in range(0, len(eval_target), 64):
         batch = eval_target[i:i + 64]
         paths = [str(images_dir / f"{s}.{ext}") for s in batch]
@@ -134,7 +163,26 @@ def _infer_multiclass(cfg: Config, eval_target, weights) -> dict:
             preds[s] = {"W": W, "H": H, "pred": pl,
                         "gt": [{"box": [round(g[1], 1), round(g[2], 1), round(g[3], 1), round(g[4], 1)],
                                 "cls": g[0], "name": classes[g[0]]} for g in gt]}
-    cfg.predictions_json.write_text(json.dumps(preds))
+            if fuse and pl:
+                boxes = [o["box"] for o in pl]
+                masks = (masker.masks_for(str(images_dir / f"{s}.{ext}"), boxes)
+                         if masker else None)
+                cc_imgs, keep = crop_boxes(r.orig_img, boxes, cfg.phase2.min_box_px, masks=masks)
+                crops_all += cc_imgs
+                box_meta += [(s, bi) for bi in keep]
+
+    if fuse and crops_all:
+        print(f"[infer] Phase-2 DINOv2 naming on {len(crops_all)} crops ...")
+        Xq = emb.embed(crops_all, cfg.phase2.batch)
+        _, _, _, votes = classify_knn(Xq, Xr, yr, cfg.phase2.knn_k, return_votes=True)
+        for (s, bi), v in zip(box_meta, votes):
+            o = preds[s]["pred"][bi]
+            # Stored "cls"/"name" stay the detector's own (w=_DEFAULT_FUSE_WEIGHT=1.0
+            # is pure YOLO); dino_votes is the raw signal `evaluate` re-fuses at any w.
+            o["cls_yolo"], o["name_yolo"] = o["cls"], o["name"]
+            o["dino_votes"] = {str(k): round(float(val), 4) for k, val in v.items()}
+
+    cfg.predictions_json.write_text(json.dumps(preds), encoding="utf-8")
     print(f"[infer] predictions -> {cfg.predictions_json}")
     return preds
 
@@ -218,7 +266,7 @@ def infer(cfg: Config, weights: Path | None = None) -> dict:
             "gt": [{"box": [round(g[1], 1), round(g[2], 1), round(g[3], 1), round(g[4], 1)],
                     "cls": g[0], "name": classes[g[0]]} for g in gt],
         }
-    cfg.predictions_json.write_text(json.dumps(preds))
+    cfg.predictions_json.write_text(json.dumps(preds), encoding="utf-8")
     if reject > 0:
         print(f"[infer] reject_below={reject}: kept {n_kept}/{n_total} proposals "
               f"({n_total - n_kept} rejected)")
@@ -226,26 +274,39 @@ def infer(cfg: Config, weights: Path | None = None) -> dict:
     return preds
 
 
-def evaluate(cfg: Config) -> str:
-    preds = json.loads(cfg.predictions_json.read_text())
-    thr = tuple(cfg.eval.iou_thresholds)
+def _resolve_pred_cls(o: dict, weight: float | None) -> int:
+    """Predicted class for one box, optionally re-fusing YOLO+DINOv2 at `weight`.
+    Falls back to the class already baked in at infer time (`o["cls"]`) when either
+    `weight` is None or the box carries no fused signal (phase2-only, or a multiclass
+    run without `phase2.fuse_multiclass`)."""
+    if weight is None or "dino_votes" not in o:
+        return o["cls"]
+    dino_votes = {int(k): v for k, v in o["dino_votes"].items()}
+    return _fuse_cls(o["cls_yolo"], o["det_conf"], dino_votes, weight)
+
+
+def _score_predictions(preds: dict, nC: int, thr, weight: float | None = None):
+    """Core class-aware + localization-only accumulation shared by `evaluate` and
+    `weight_sweep`. Pure numpy/Hungarian matching over an already-computed
+    predictions.json — no detection or embedding runs here."""
     be_ca, be_loc = BoxEval(thr), BoxEval(thr)
-    nC = len(cfg.classes)
     gt_n = np.zeros(nC, int); found = np.zeros(nC, int); named = np.zeros(nC, int); fp = 0
 
     for d in preds.values():
+        pred = d["pred"]
+        pr_cls = [_resolve_pred_cls(o, weight) for o in pred]
         gt_ca = [(o["cls"], o["box"]) for o in d["gt"]]
-        pr_ca = [((o["cls"] if o["cls"] >= 0 else -99), o["box"]) for o in d["pred"]]
+        pr_ca = [((c if c >= 0 else -99), o["box"]) for c, o in zip(pr_cls, pred)]
         be_ca.add_frame(gt_ca, pr_ca)
-        be_loc.add_frame([(0, o["box"]) for o in d["gt"]], [(0, o["box"]) for o in d["pred"]])
+        be_loc.add_frame([(0, o["box"]) for o in d["gt"]], [(0, o["box"]) for o in pred])
 
         gt = d["gt"]
-        prb = np.array([o["box"] for o in d["pred"]], float) if d["pred"] else np.zeros((0, 4))
-        prc = np.array([o["cls"] for o in d["pred"]])
+        prb = np.array([o["box"] for o in pred], float) if pred else np.zeros((0, 4))
+        prc = np.array(pr_cls, int)
         if gt:
             gb = np.array([o["box"] for o in gt], float)
             M = iou_matrix(gb, prb)
-            matched = np.zeros(len(d["pred"]), bool)
+            matched = np.zeros(len(pred), bool)
             for gi, o in enumerate(gt):
                 c = o["cls"]; gt_n[c] += 1
                 if prb.shape[0] == 0:
@@ -256,6 +317,48 @@ def evaluate(cfg: Config) -> str:
                     if prc[j] == c:
                         named[c] += 1
             fp += int((~matched).sum())
+    return be_ca, be_loc, gt_n, found, named, fp
+
+
+def _namer_line(cfg: Config, fused: bool, weight: float | None, ref_n: int) -> str:
+    if is_multiclass(cfg) and not fused:
+        return "- **Namer:** detector itself (multi-class; Phase 2 skipped)"
+    if is_multiclass(cfg) and fused:
+        w = weight if weight is not None else _DEFAULT_FUSE_WEIGHT
+        return (f"- **Namer:** fused — {w:.1f}×YOLO + {1 - w:.1f}×DINOv2 kNN "
+               f"(k={cfg.phase2.knn_k}) · reference = {ref_n} crops from the annotated frames"
+               " · see weight sweep below")
+    return (f"- **Namer:** DINOv2 kNN (k={cfg.phase2.knn_k}) · reference = {ref_n} crops from the annotated frames"
+           + (f" · reject_below={cfg.phase2.reject_below}" if float(getattr(cfg.phase2, 'reject_below', 0) or 0) > 0 else ""))
+
+
+def _dataset_stats(cfg: Config):
+    """Full-dataset frame/box counts — every labeled frame in `data.images_dir`,
+    not just the subset scored by this run. Returns (n_frames, per_class_counts, n_boxes)."""
+    stems = ds.list_frames(cfg.images_dir, cfg.data.image_ext)
+    nC = len(cfg.classes)
+    counts = np.zeros(nC, int)
+    n_boxes = 0
+    for s in stems:
+        rows = ds._read_label(cfg.images_dir / f"{s}.txt")
+        for r in rows:
+            c = int(float(r[0]))
+            if 0 <= c < nC:
+                counts[c] += 1
+        n_boxes += len(rows)
+    return len(stems), counts, n_boxes
+
+
+def evaluate(cfg: Config, weight: float | None = None) -> str:
+    """Build the run report. `weight` optionally overrides the YOLO/DINOv2 fusion
+    weight for a `phase2.fuse_multiclass` run; the report also always appends a
+    w=0..1 weight-sweep table (see `_weight_sweep_section`) when fused signal is
+    present, so the best w is visible without a separate step."""
+    preds = json.loads(cfg.predictions_json.read_text())
+    thr = tuple(cfg.eval.iou_thresholds)
+    nC = len(cfg.classes)
+    fused = any("dino_votes" in o for d in preds.values() for o in d["pred"])
+    be_ca, be_loc, gt_n, found, named, fp = _score_predictions(preds, nC, thr, weight)
 
     ca, loc = be_ca.summary(), be_loc.summary()
     present = [c for c in range(nC) if gt_n[c] > 0]
@@ -266,6 +369,7 @@ def evaluate(cfg: Config) -> str:
 
     _, annotated, remaining, eval_target, _ = _splits(cfg)
     ref_n = int(np.load(cfg.reference_cache)["yr"].shape[0]) if cfg.reference_cache.exists() else 0
+    n_frames, ds_counts, ds_n_boxes = _dataset_stats(cfg)
 
     def rows(summary):
         out = []
@@ -281,10 +385,21 @@ def evaluate(cfg: Config) -> str:
         f"- **Annotated frames (input):** {len(annotated)} — spread evenly across the dataset",
         f"- **Auto-annotated (remaining):** {len(remaining)}  ·  **scored:** {len(eval_target)}",
         f"- **Proposer:** `{proposer_kind(cfg)}`  ·  confidence {cfg.infer.conf}",
-        (f"- **Namer:** detector itself (multi-class; Phase 2 skipped)" if is_multiclass(cfg)
-         else f"- **Namer:** DINOv2 kNN (k={cfg.phase2.knn_k}) · reference = {ref_n} crops from the annotated frames"
-         + (f" · reject_below={cfg.phase2.reject_below}" if float(getattr(cfg.phase2, 'reject_below', 0) or 0) > 0 else "")),
+        (_namer_line(cfg, fused, weight, ref_n)),
         f"- **Predicted boxes:** {ca['num_pred']}  ·  **false positives:** {fp}  ·  **mean IoU:** {ca['mean_iou']}",
+        "",
+        "## Dataset",
+        "",
+        f"- **Frames (total, labeled):** {n_frames}  ·  **classes:** {len(cfg.classes)}  ·  "
+        f"**GT boxes (total):** {ds_n_boxes}",
+        "",
+        "| id | class | gt boxes | % of total |",
+        "|---:|---|---:|---:|",
+    ]
+    for c in sorted(range(len(cfg.classes)), key=lambda c: -ds_counts[c]):
+        pct = 100 * ds_counts[c] / ds_n_boxes if ds_n_boxes else 0.0
+        md.append(f"| {c} | {cfg.classes[c]} | {ds_counts[c]} | {pct:.1f}% |")
+    md += [
         "",
         "## Localization — without classes (box only)",
         "",
@@ -322,11 +437,49 @@ def evaluate(cfg: Config) -> str:
         md.append(f"| {c} | {cfg.classes[c]} | {gt_n[c]} | {r:.3f} | {nf:.3f} | {named[c]/gt_n[c]:.3f} |")
     md += ["", f"*Visualization: `{cfg.work.name}_viz.mp4` — top = predictions (red), bottom = ground truth (green).*"]
 
+    if fused:
+        md += ["", *_weight_sweep_section(cfg, preds, nC, thr)]
+
     report = "\n".join(md)
-    report_path = cfg.work / f"{cfg.work.name}_report.md"
-    report_path.write_text(report)
+    suffix = f"_w{weight:.1f}" if (weight is not None and fused) else ""
+    report_path = cfg.work / f"{cfg.work.name}_report{suffix}.md"
+    report_path.write_text(report, encoding="utf-8")
     print(f"[evaluate] -> {report_path}")
     return report
+
+
+def _weight_sweep_section(cfg: Config, preds: dict, nC: int, thr, weights=None) -> list[str]:
+    """Markdown lines scanning the YOLO/DINOv2 fusion weight w in (w)*yolo + (1-w)*dino,
+    w=0..1 step 0.1 by default, for a `phase2.fuse_multiclass` run. Recomputing the
+    fused class and re-scoring at each w is pure numpy/Hungarian matching over the
+    already-cached predictions — no detection or DINOv2 embedding reruns — so this
+    costs about the same as one extra `evaluate` pass, not 11x the `infer` time."""
+    weights = list(weights) if weights else [round(x * 0.1, 1) for x in range(11)]
+    rows, best = [], None
+    for w in weights:
+        _, _, gt_n, found, named, fp = _score_predictions(preds, nC, thr, weight=w)
+        present = [c for c in range(nC) if gt_n[c] > 0]
+        e2e_mi = named[present].sum() / gt_n[present].sum()
+        e2e_ma = float(np.mean([named[c] / gt_n[c] for c in present]))
+        rows.append((w, e2e_mi, e2e_ma, fp))
+        if best is None or e2e_mi > best[1]:
+            best = (w, e2e_mi, e2e_ma, fp)
+
+    md = [
+        "## YOLO / DINOv2 weight sweep",
+        "",
+        "score(class c) = w · yolo_conf·[c == yolo_cls] + (1-w) · dino_vote(c), "
+        "w scanned 0..1 in steps of 0.1 (cheap — reuses the predictions already cached above).",
+        "",
+        "| w (yolo weight) | e2e micro | e2e macro | false positives |",
+        "|---:|---:|---:|---:|",
+    ]
+    for w, e2e_mi, e2e_ma, fp in rows:
+        mark = "  **← best**" if w == best[0] else ""
+        md.append(f"| {w:.1f} | {e2e_mi:.3f} | {e2e_ma:.3f} | {fp} |{mark}")
+    md += ["", f"Best w = **{best[0]:.1f}** (e2e micro = {best[1]:.3f}, macro = {best[2]:.3f}). "
+          "Re-run `evaluate --weight <w>` to bake a specific weight into the report above."]
+    return md
 
 
 def visualize(cfg: Config):

@@ -25,6 +25,11 @@ def main(argv=None) -> int:
     ap.add_argument("--config", required=True, help="path to a YAML config")
     ap.add_argument("--weights", default=None, help="detector weights for `infer`")
     ap.add_argument("--rebuild", action="store_true", help="rebuild the Phase-2 reference cache")
+    ap.add_argument("--weight", type=float, default=None,
+                    help="`evaluate` only: override the YOLO/DINOv2 fusion weight w in "
+                         "(w)*yolo + (1-w)*dino for a phase2.fuse_multiclass run "
+                         "(default: pure YOLO, w=1.0). The report also always includes "
+                         "a w=0..1 sweep table regardless.")
     args = ap.parse_args(argv)
 
     cfg = Config(args.config)
@@ -50,7 +55,7 @@ def main(argv=None) -> int:
         "train": lambda: P.train(cfg),
         "reference": lambda: P.reference(cfg, rebuild=args.rebuild),
         "infer": lambda: P.infer(cfg, weights=args.weights),
-        "evaluate": lambda: P.evaluate(cfg),
+        "evaluate": lambda: P.evaluate(cfg, weight=args.weight),
         "visualize": lambda: P.visualize(cfg),
         "visualize-masks": lambda: P.visualize_masks(cfg),
         "all": lambda: P.run_all(cfg),
