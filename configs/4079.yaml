@@ -1,13 +1,13 @@
-# Pipeline config — "4079 End Stop Verification" · 2,200 frames · 640x480 · 6 classes
+# Pipeline config — "4079 End Stop Verification" · 2,718 frames · 640x480 · 6 classes
 
 project:
   root: auto
   work_dir: runs/4079_{frames}_yolo
 
 data:
-  images_dir: "datasets/4079 End Stop Verification"
-  image_ext: png
-  classes_file: "datasets/4079 End Stop Verification/classes.txt"
+  images_dir: "datasets/4079"
+  image_ext: jpg
+  classes_file: "datasets/4079/classes.txt"
   annotation_frames: 300
   eval_frames: -1                     # remaining to score (-1 = all)
   monitor_val: 200
