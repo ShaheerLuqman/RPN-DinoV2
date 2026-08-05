@@ -1,14 +1,11 @@
-# Semi-automated annotation pipeline — Phase 1 (localize) + Phase 2 (name)
+# YOLO multi-class detection pipeline
 # Install:  pip install -r requirements.txt
 # GPU: install a torch build matching your CUDA (see https://pytorch.org).
 
 ultralytics>=8.3
 torch>=2.1
 torchvision
-transformers>=4.40
-scikit-learn>=1.3
 scipy>=1.10
 opencv-python>=4.8
 numpy>=1.24
-Pillow>=10.0
 PyYAML>=6.0

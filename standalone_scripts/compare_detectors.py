@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Compare two Phase-1 multiclass detector checkpoints on the same dataset/config.
+"""Compare two multiclass YOLO detector checkpoints on the same dataset/config.
 
 Runs `infer` + `evaluate` (the same steps `pipeline.cli` uses to produce a run
 report) for each given checkpoint against a pipeline YAML config, then writes a
 side-by-side comparison of the headline numbers.
-
-Speed note: `phase2.fuse_multiclass` in the config makes `infer` also DINOv2-embed
-every predicted crop, purely to build the bonus YOLO/DINOv2 weight-sweep table —
-it does NOT affect any of the core Localization / With-classes / Compounded /
-Per-class numbers (those are always the detector's own, pure-YOLO predictions).
-This script disables fusion by default (`--fuse` to turn it back on) so a
-detector-vs-detector comparison doesn't pay for ~700k DINOv2 embeddings per model.
 
 A checkpoint whose weights are byte-identical to a previously-cached
 `predictions_<label>.json` in the run's work_dir is not re-run (pass --force to
@@ -55,11 +48,10 @@ def _md5(path: Path) -> str:
 
 def _headline(cfg, P, np, preds: dict) -> dict:
     """Aggregate metrics for the comparison table, computed the same way `evaluate`
-    computes the numbers in its main report body (pure detector predictions,
-    weight=None -> the class baked in at infer time)."""
+    computes the numbers in its main report body."""
     thr = tuple(cfg.eval.iou_thresholds)
     nC = len(cfg.classes)
-    be_ca, be_loc, gt_n, found, named, fp = P._score_predictions(preds, nC, thr, weight=None)
+    be_ca, be_loc, gt_n, found, named, fp = P._score_predictions(preds, nC, thr)
     ca, loc = be_ca.summary(), be_loc.summary()
     present = [c for c in range(nC) if gt_n[c] > 0]
 
@@ -142,9 +134,6 @@ def main() -> int:
     ap.add_argument("--config", default="configs/doosan_swivel.yaml")
     ap.add_argument("--model", action="append", type=_parse_model_arg, required=True,
                     help="label=path/to/weights.pt, repeatable")
-    ap.add_argument("--fuse", action="store_true",
-                    help="honor phase2.fuse_multiclass (slow: DINOv2-embeds every "
-                         "predicted crop for the bonus weight-sweep table). Off by default.")
     ap.add_argument("--force", action="store_true",
                     help="re-run infer even if a cached predictions_<label>.json matches these weights")
     args = ap.parse_args()
@@ -156,11 +145,6 @@ def main() -> int:
     if dev.isdigit():
         os.environ["CUDA_VISIBLE_DEVICES"] = dev
         cfg.phase1.device = "0"
-    if getattr(cfg.phase2, "hf_offline", False):
-        for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_IMPLICIT_TOKEN"):
-            os.environ.setdefault(k, "1")
-    if not args.fuse:
-        cfg.phase2.fuse_multiclass = False
 
     import numpy as np
     from pipeline import pipeline as P

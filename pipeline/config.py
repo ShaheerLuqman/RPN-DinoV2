@@ -32,21 +32,13 @@ class Config:
         else:
             self.root = Path(root).expanduser().resolve()
 
-        for section in ("data", "phase1", "phase2", "infer", "eval", "visualize"):
+        for section in ("data", "phase1", "infer", "eval", "visualize"):
             setattr(self, section, _ns(self.raw.get(section, {}) or {}))
 
-        # `{frames}` and `{proposer}` in work_dir are auto-filled so each run is
-        # self-labeling (e.g. runs/4079_{frames}_{proposer} -> runs/4079_300_sam).
-        p1 = self.raw.get("phase1") or {}
+        # `{frames}` in work_dir is auto-filled so each run is self-labeling
+        # (e.g. runs/4079_{frames} -> runs/4079_300).
         frames = str((self.raw.get("data") or {}).get("annotation_frames", ""))
-        proposer = str(p1.get("proposer", "yolo") or "yolo")
-        wd = (str(self.raw["project"]["work_dir"])
-              .replace("{frames}", frames)
-              .replace("{proposer}", proposer))
-        if p1.get("multiclass") and not wd.endswith("_mc"):
-            wd += "_mc"                    # multi-class run (Phase 2 skipped)
-        if (self.raw.get("phase2") or {}).get("mask") and not wd.endswith("_mask"):
-            wd += "_mask"                  # Phase-2 SAM background masking (separate cache)
+        wd = str(self.raw["project"]["work_dir"]).replace("{frames}", frames)
         self.work = self.resolve(wd)
         self.work.mkdir(parents=True, exist_ok=True)
         self.images_dir = self.resolve(self.data.images_dir)
@@ -72,10 +64,6 @@ class Config:
     @property
     def best_weights(self) -> Path:
         return self.detector_dir / "train" / "weights" / "best.pt"
-
-    @property
-    def reference_cache(self) -> Path:
-        return self.work / "reference.npz"
 
     @property
     def predictions_json(self) -> Path:

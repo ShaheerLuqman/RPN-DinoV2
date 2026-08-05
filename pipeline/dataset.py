@@ -70,9 +70,8 @@ def _link_or_copy(src: Path, dst: Path) -> None:
 
 def build_yolo_dataset(images_dir: Path, ext: str, train_stems: list[str],
                        val_stems: list[str], out_dir: Path,
-                       single_cls: bool = True, names: list[str] | None = None) -> Path:
-    """Symlink images and write labels. single_cls -> collapse to class 0 'object';
-    else keep original class ids with nc=len(names)."""
+                       names: list[str]) -> Path:
+    """Symlink images and write labels, keeping original class ids (nc=len(names))."""
     for split in ("train", "val"):
         (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
@@ -83,14 +82,11 @@ def build_yolo_dataset(images_dir: Path, ext: str, train_stems: list[str],
             if link.exists() or link.is_symlink():
                 link.unlink()
             _link_or_copy((images_dir / f"{s}.{ext}").resolve(), link)
-            lines = [f"{'0' if single_cls else p[0]} {' '.join(p[1:])}"
+            lines = [f"{p[0]} {' '.join(p[1:])}"
                      for p in _read_label(images_dir / f"{s}.txt")]
             (out_dir / "labels" / split / f"{s}.txt").write_text("\n".join(lines))
 
-    if single_cls or not names:
-        nc, names_yaml = 1, "[object]"
-    else:
-        nc, names_yaml = len(names), "[" + ", ".join(names) + "]"
+    nc, names_yaml = len(names), "[" + ", ".join(names) + "]"
     data_yaml = out_dir / "data.yaml"
     data_yaml.write_text(
         f"path: {out_dir.resolve()}\ntrain: images/train\nval: images/val\n"

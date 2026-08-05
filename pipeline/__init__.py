@@ -1,6 +1,6 @@
-"""Semi-automated annotation pipeline: Phase 1 (localize) -> Phase 2 (name).
+"""Semi-automated annotation pipeline: multi-class YOLO detector (localize + name).
 
-A dataset-agnostic, config-driven implementation of the two-phase auto-annotation
-pipeline. See README_pipeline.md and configs/*.yaml.
+A dataset-agnostic, config-driven implementation of the single-stage YOLO
+auto-annotation pipeline. See README_pipeline.md and configs/*.yaml.
 """
 __version__ = "0.1.0"
