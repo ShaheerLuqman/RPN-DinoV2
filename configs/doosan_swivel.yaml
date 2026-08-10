@@ -3,6 +3,7 @@
 project:
   root: auto
   work_dir: runs/doosan_swivel_{frames}_yolo
+  steps: [prepare, train, infer, evaluate]   # steps: [prepare, train, infer, evaluate, visualize]
 
 data:
   images_dir: "datasets/doosan_swivel"

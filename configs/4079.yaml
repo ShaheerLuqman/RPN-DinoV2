@@ -3,6 +3,7 @@
 project:
   root: auto
   work_dir: runs/4079_{frames}_yolo
+  steps: [prepare, train, infer, evaluate]   # steps: [prepare, train, infer, evaluate, visualize]
 
 data:
   images_dir: "datasets/4079"

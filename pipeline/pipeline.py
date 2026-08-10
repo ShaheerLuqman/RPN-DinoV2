@@ -252,9 +252,15 @@ def visualize(cfg: Config):
     return render_video(cfg)
 
 
+_STEP_FUNCS = {"prepare": prepare, "train": train, "infer": infer,
+               "evaluate": evaluate, "visualize": visualize}
+
+
 def run_all(cfg: Config):
-    prepare(cfg)
-    train(cfg)
-    infer(cfg)
-    evaluate(cfg)
-    visualize(cfg)
+    """Run the full pipeline in canonical order, skipping any step disabled via
+    `project.steps` in the config (see `Config._load_steps`)."""
+    for name, fn in _STEP_FUNCS.items():
+        if name not in cfg.steps:
+            print(f"[run_all] skip {name} (disabled in config)")
+            continue
+        fn(cfg)

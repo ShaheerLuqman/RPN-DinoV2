@@ -36,6 +36,7 @@ Copy `configs/doosan_swivel.yaml`, edit the `data:` paths and (optionally)
 
 | Field | Meaning |
 |---|---|
+| `project.steps` | which steps `all` runs — a list from `prepare, train, infer, evaluate, visualize`; drop any to skip it (e.g. omit `visualize` to skip the video). Running a step directly on the CLI ignores this and always runs. |
 | `data.annotation_frames` | **the annotation budget** — how many frames you annotate (spread evenly) to train the detector; every other frame is auto-annotated & scored. |
 | `data.eval_frames` | how many of the remaining frames to score (`-1` = all remaining) |
 | `data.monitor_val` | small held-out subset for the detector's per-epoch validation |
