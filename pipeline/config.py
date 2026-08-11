@@ -42,8 +42,12 @@ class Config:
             setattr(self, section, _ns(self.raw.get(section, {}) or {}))
 
         # `{frames}` in work_dir is auto-filled so each run is self-labeling
-        # (e.g. runs/4079_{frames} -> runs/4079_300).
-        frames = str((self.raw.get("data") or {}).get("annotation_frames", ""))
+        # (e.g. runs/4079_{frames} -> runs/4079_300). Under `sampling: greedy` the
+        # budget knob is `samples_per_class` (a per-class target), not
+        # `annotation_frames` (a frame count) — substitute whichever one applies.
+        data_raw = self.raw.get("data") or {}
+        frames_key = "samples_per_class" if data_raw.get("sampling") == "greedy" else "annotation_frames"
+        frames = str(data_raw.get(frames_key, ""))
         wd = str(self.raw["project"]["work_dir"]).replace("{frames}", frames)
         self.work = self._stamped_work_dir(self.resolve(wd))
         self.work.mkdir(parents=True, exist_ok=True)

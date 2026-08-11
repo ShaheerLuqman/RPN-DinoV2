@@ -37,7 +37,9 @@ Copy `configs/doosan_swivel.yaml`, edit the `data:` paths and (optionally)
 | Field | Meaning |
 |---|---|
 | `project.steps` | which steps `all` runs — a list from `prepare, train, infer, evaluate, visualize`; drop any to skip it (e.g. omit `visualize` to skip the video). Running a step directly on the CLI ignores this and always runs. |
-| `data.annotation_frames` | **the annotation budget** — how many frames you annotate (spread evenly) to train the detector; every other frame is auto-annotated & scored. |
+| `data.sampling` | how the annotated (training) set is picked — `even` (spread evenly), `random`, or `greedy` (below) |
+| `data.annotation_frames` | **the annotation budget** — how many frames you annotate (spread evenly/randomly) to train the detector; used when `sampling: even|random`. Every other frame is auto-annotated & scored. |
+| `data.samples_per_class` | per-class sample floor — used when `sampling: greedy` instead of `annotation_frames` |
 | `data.eval_frames` | how many of the remaining frames to score (`-1` = all remaining) |
 | `data.monitor_val` | small held-out subset for the detector's per-epoch validation |
 | `phase1.model` | `yolo11l` or `yolo11x` base weights to fine-tune |
@@ -87,6 +89,26 @@ this writes `runs/doosan_swivel_100_yolo/report.md`, `runs/doosan_swivel_200_yol
 etc. — each with its own localization (with/without classes) report and comparison
 video. More annotated frames = higher accuracy; the sweep shows how few you can get
 away with.
+
+## Greedy (coverage-optimal) frame selection
+
+Instead of a fixed frame budget spread evenly, `sampling: greedy` picks the
+*fewest* frames such that every class has at least `samples_per_class` sample
+frames — most frames show several classes at once, so this reaches the same
+per-class coverage with far fewer annotated frames than `even` sampling needs by
+chance. Preview the trade-off first with `standalone_scripts/frame_budget_analysis.py`
+(`--target N` or `--sweep LO:HI` to compare several N at once), then point a config
+at it:
+
+```yaml
+data:
+  sampling: greedy
+  samples_per_class: 50   # instead of annotation_frames
+```
+
+`configs/doosan_swivel_greedy50.yaml` is a ready-made variant of
+`configs/doosan_swivel.yaml` (`samples_per_class: 50`, same hyperparameters
+otherwise) for comparing directly against the 1000-frame even-sampling run.
 
 ## Comparing checkpoints
 

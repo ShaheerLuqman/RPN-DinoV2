@@ -1,19 +1,24 @@
-# Pipeline config — doosan_swivel · 22,889 frames · 53 classes
+# Pipeline config — doosan_swivel · 22,889 frames · 55 classes
+# Variant of doosan_swivel.yaml: `sampling: greedy` picks the annotated/training set
+# via greedy set cover (>=50 sample frames per class) instead of 1000 evenly-spread
+# frames — see standalone_scripts/frame_budget_analysis.py. For comparing against
+# the even-sampling run: same dataset/hyperparameters, only `data.sampling` +
+# `data.samples_per_class` (+ work_dir label) differ from doosan_swivel.yaml.
 
 project:
   root: auto
-  work_dir: runs/doosan_swivel_{frames}_yolo
+  work_dir: runs/doosan_swivel_greedyN{frames}_yolo
   steps: [prepare, train, infer, evaluate]   # steps: [prepare, train, infer, evaluate, visualize]
 
 data:
   images_dir: "datasets/doosan_swivel"
   image_ext: jpg
   classes_file: "datasets/doosan_swivel/classes.txt"
-  annotation_frames: 1000             # used when sampling: even|random (total frame budget)
-  samples_per_class: 50               # used when sampling: greedy (per-class sample floor)
+  annotation_frames: 1000             # unused under sampling: greedy
+  samples_per_class: 50               # per-class sample floor — greedy picks the fewest frames covering it
   eval_frames: -1                     # remaining to score (-1 = all)
   monitor_val: 200
-  sampling: even                      # even | random | greedy (greedy cover — see standalone_scripts/frame_budget_analysis.py)
+  sampling: greedy                    # even | random | greedy
   seed: 0
 
 phase1:

@@ -21,7 +21,10 @@ from .visualize import render_video
 def _splits(cfg: Config):
     """Return (stems, annotated, remaining, eval_target, monitor).
 
-    annotated   = the N evenly-spread frames we 'manually annotate' (used for training).
+    annotated   = frames we 'manually annotate' (used for training) — spread evenly/
+                 randomly for a fixed budget (`sampling: even|random`), or picked by
+                 greedy set cover for a per-class sample floor (`sampling: greedy`,
+                 see `dataset.greedy_annotate_split`).
     remaining   = every other frame — what we auto-annotate.
     eval_target = `remaining`, optionally capped by data.eval_frames for speed.
     monitor     = small even subset of `remaining` for the detector's per-epoch val.
@@ -29,7 +32,12 @@ def _splits(cfg: Config):
     stems = ds.list_frames(cfg.images_dir, cfg.data.image_ext)
     sampling = getattr(cfg.data, "sampling", "even")
     seed = cfg.data.seed
-    annotated, remaining = ds.annotate_split(stems, int(cfg.data.annotation_frames), sampling, seed)
+    if sampling == "greedy":
+        target = int(cfg.data.samples_per_class)
+        annotated, remaining = ds.greedy_annotate_split(cfg.images_dir, cfg.data.image_ext,
+                                                         stems, len(cfg.classes), target)
+    else:
+        annotated, remaining = ds.annotate_split(stems, int(cfg.data.annotation_frames), sampling, seed)
     ef = int(getattr(cfg.data, "eval_frames", -1) or -1)
     eval_target = ds.even_subset(remaining, ef, "even", seed) if ef > 0 else remaining
     mv = min(int(getattr(cfg.data, "monitor_val", 200)), len(remaining))
@@ -41,12 +49,16 @@ def _splits(cfg: Config):
 
 def prepare(cfg: Config) -> Path:
     _, annotated, remaining, eval_target, monitor = _splits(cfg)
+    shuffle_train = bool(getattr(cfg.data, "shuffle_train_order", False))
     data_yaml = ds.build_yolo_dataset(cfg.images_dir, cfg.data.image_ext,
                                       annotated, monitor, cfg.dataset_dir,
-                                      names=cfg.classes)
+                                      names=cfg.classes,
+                                      shuffle_train_names=shuffle_train,
+                                      seed=cfg.data.seed)
     print(f"[prepare] annotate {len(annotated)} frames (evenly spread) -> auto-annotate "
           f"{len(remaining)} remaining (scoring {len(eval_target)}); "
-          f"detector monitor-val={len(monitor)} -> {data_yaml}")
+          f"detector monitor-val={len(monitor)} -> {data_yaml}"
+          + (" [train filenames shuffled — same frames, different listing order]" if shuffle_train else ""))
     return data_yaml
 
 
@@ -142,10 +154,9 @@ def _score_predictions(preds: dict, nC: int, thr):
     return be_ca, be_loc, gt_n, found, named, fp
 
 
-def _dataset_stats(cfg: Config):
-    """Full-dataset frame/box counts — every labeled frame in `data.images_dir`,
-    not just the subset scored by this run. Returns (n_frames, per_class_counts, n_boxes)."""
-    stems = ds.list_frames(cfg.images_dir, cfg.data.image_ext)
+def _frame_stats(cfg: Config, stems: list[str]):
+    """Per-class box counts over exactly `stems` (not the whole dataset).
+    Returns (per_class_counts, n_boxes)."""
     nC = len(cfg.classes)
     counts = np.zeros(nC, int)
     n_boxes = 0
@@ -156,7 +167,7 @@ def _dataset_stats(cfg: Config):
             if 0 <= c < nC:
                 counts[c] += 1
         n_boxes += len(rows)
-    return len(stems), counts, n_boxes
+    return counts, n_boxes
 
 
 def evaluate(cfg: Config) -> str:
@@ -174,7 +185,7 @@ def evaluate(cfg: Config) -> str:
     e2e_mi = named[present].sum() / gt_n[present].sum()
 
     _, annotated, remaining, eval_target, _ = _splits(cfg)
-    n_frames, ds_counts, ds_n_boxes = _dataset_stats(cfg)
+    tr_counts, tr_n_boxes = _frame_stats(cfg, annotated)
 
     def rows(summary):
         out = []
@@ -192,17 +203,25 @@ def evaluate(cfg: Config) -> str:
         f"- **Detector:** multi-class YOLO  ·  confidence {cfg.infer.conf}",
         f"- **Predicted boxes:** {ca['num_pred']}  ·  **false positives:** {fp}  ·  **mean IoU:** {ca['mean_iou']}",
         "",
-        "## Dataset",
+        "## Training frames (annotated set)",
         "",
-        f"- **Frames (total, labeled):** {n_frames}  ·  **classes:** {len(cfg.classes)}  ·  "
-        f"**GT boxes (total):** {ds_n_boxes}",
+        f"- **Frames:** {len(annotated)}  ·  **classes represented:** "
+        f"{sum(1 for n in tr_counts if n > 0)}/{len(cfg.classes)}  ·  **GT boxes:** {tr_n_boxes}",
         "",
         "| id | class | gt boxes | % of total |",
         "|---:|---|---:|---:|",
     ]
-    for c in sorted(range(len(cfg.classes)), key=lambda c: -ds_counts[c]):
-        pct = 100 * ds_counts[c] / ds_n_boxes if ds_n_boxes else 0.0
-        md.append(f"| {c} | {cfg.classes[c]} | {ds_counts[c]} | {pct:.1f}% |")
+    for c in sorted(range(len(cfg.classes)), key=lambda c: -tr_counts[c]):
+        pct = 100 * tr_counts[c] / tr_n_boxes if tr_n_boxes else 0.0
+        md.append(f"| {c} | {cfg.classes[c]} | {tr_counts[c]} | {pct:.1f}% |")
+    md += [
+        "",
+        f"<details><summary>Frame list ({len(annotated)})</summary>",
+        "",
+        ", ".join(annotated),
+        "",
+        "</details>",
+    ]
     md += [
         "",
         "## Localization — without classes (box only)",

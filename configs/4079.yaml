@@ -9,10 +9,11 @@ data:
   images_dir: "datasets/4079"
   image_ext: jpg
   classes_file: "datasets/4079/classes.txt"
-  annotation_frames: 300
+  annotation_frames: 300              # used when sampling: even|random (total frame budget)
+  samples_per_class: 50               # used when sampling: greedy (per-class sample floor)
   eval_frames: -1                     # remaining to score (-1 = all)
   monitor_val: 200
-  sampling: even                      # even | random
+  sampling: even                      # even | random | greedy (greedy cover — see standalone_scripts/frame_budget_analysis.py)
   seed: 0
 
 phase1:
