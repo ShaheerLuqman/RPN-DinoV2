@@ -1,0 +1,43 @@
+# Pipeline config — doosan_tackweld · 4,416 frames · 11 classes
+# `sampling: greedy` picks the annotated/training set via greedy set cover
+# (>=100 sample frames per class) — see standalone_scripts/frame_budget_analysis.py.
+
+project:
+  root: auto
+  work_dir: runs/doosan_tackweld_greedyN{frames}_yolo
+  steps: [prepare, train, infer, evaluate]   # steps: [prepare, train, infer, evaluate, visualize]
+
+data:
+  images_dir: "datasets/doosan_tackweld_processed"
+  image_ext: jpg
+  classes_file: "datasets/doosan_tackweld_processed/classes.txt"
+  annotation_frames: 500              # unused under sampling: greedy
+  samples_per_class: 100              # per-class sample floor — greedy picks the fewest frames covering it
+  eval_frames: -1                     # remaining to score (-1 = all)
+  monitor_val: 200
+  sampling: greedy                    # even | random | greedy
+  seed: 0
+
+phase1:
+  model: yolo11l                      # yolo11l | yolo11x
+  imgsz: 640                          # native long side (1280x480 frames) — no downscale loss for small boxes
+  epochs: 15
+  batch: 4                            # dropped from 16: imgsz 640->1280 is ~4x the VRAM/step
+  patience: 20
+  close_mosaic: 10
+  amp: true
+  device: "0"
+
+infer:
+  conf: 0.4                           # lower = more recall
+  iou_nms: 0.3
+  max_det: 300
+
+eval:
+  iou_thresholds: [0.5, 0.75]
+
+visualize:
+  fps: 8
+  limit: -1                           # -1 = all scored frames
+  crf: 28                             # lower = better/larger
+  show_conf: false

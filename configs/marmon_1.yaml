@@ -1,0 +1,41 @@
+# Pipeline config — marmon_1 · 10,715 frames · 640x480 · 17 classes
+
+project:
+  root: auto
+  work_dir: runs/marmon_1_{frames}_yolo
+  steps: [prepare, train, infer, evaluate, visualize]
+
+data:
+  images_dir: "datasets/marmon_1"
+  image_ext: jpg
+  classes_file: "datasets/marmon_1/classes.txt"
+  annotation_frames: 1000             # used when sampling: even|random (total frame budget)
+  samples_per_class: 50               # used when sampling: greedy (per-class sample floor)
+  eval_frames: -1                     # remaining to score (-1 = all)
+  monitor_val: 200
+  sampling: even                      # even | random | greedy (greedy cover — see standalone_scripts/frame_budget_analysis.py)
+  seed: 0
+
+phase1:
+  model: yolo11l                      # yolo11l | yolo11x
+  imgsz: 640
+  epochs: 15
+  batch: 16
+  patience: 20
+  close_mosaic: 10
+  amp: true
+  device: "0"
+
+infer:
+  conf: 0.4                           # lower = more recall
+  iou_nms: 0.3
+  max_det: 300
+
+eval:
+  iou_thresholds: [0.5, 0.75]
+
+visualize:
+  fps: 8
+  limit: -1                           # -1 = all scored frames
+  crf: 28                             # lower = better/larger
+  show_conf: false
