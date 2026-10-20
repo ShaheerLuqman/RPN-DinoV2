@@ -10,3 +10,4 @@ opencv-python>=4.8
 numpy>=1.24
 PyYAML>=6.0
 boto3>=1.34   # standalone_scripts/download_videos_s3_timestamp.py (S3 downloads)
+transformers>=4.40   # frame_extraction/select_frames.py (frozen DINOv2 frame embeddings)

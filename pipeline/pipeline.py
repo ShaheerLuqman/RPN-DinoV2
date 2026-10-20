@@ -22,9 +22,11 @@ def _splits(cfg: Config):
     """Return (stems, annotated, remaining, eval_target, monitor).
 
     annotated   = frames we 'manually annotate' (used for training) — spread evenly/
-                 randomly for a fixed budget (`sampling: even|random`), or picked by
+                 randomly for a fixed budget (`sampling: even|random`), picked by
                  greedy set cover for a per-class sample floor (`sampling: greedy`,
-                 see `dataset.greedy_annotate_split`).
+                 see `dataset.greedy_annotate_split`), or taken directly from a
+                 frame_extraction/select_frames.py manifest (`sampling: manifest`,
+                 `data.manifest_file`, see `dataset.manifest_annotate_split`).
     remaining   = every other frame — what we auto-annotate.
     eval_target = `remaining`, optionally capped by data.eval_frames for speed.
     monitor     = small even subset of `remaining` for the detector's per-epoch val.
@@ -36,6 +38,8 @@ def _splits(cfg: Config):
         target = int(cfg.data.samples_per_class)
         annotated, remaining = ds.greedy_annotate_split(cfg.images_dir, cfg.data.image_ext,
                                                          stems, len(cfg.classes), target)
+    elif sampling == "manifest":
+        annotated, remaining = ds.manifest_annotate_split(stems, cfg.resolve(cfg.data.manifest_file))
     else:
         annotated, remaining = ds.annotate_split(stems, int(cfg.data.annotation_frames), sampling, seed)
     ef = int(getattr(cfg.data, "eval_frames", -1) or -1)
@@ -55,7 +59,8 @@ def prepare(cfg: Config) -> Path:
                                       names=cfg.classes,
                                       shuffle_train_names=shuffle_train,
                                       seed=cfg.data.seed)
-    print(f"[prepare] annotate {len(annotated)} frames (evenly spread) -> auto-annotate "
+    sampling = getattr(cfg.data, "sampling", "even")
+    print(f"[prepare] annotate {len(annotated)} frames (sampling: {sampling}) -> auto-annotate "
           f"{len(remaining)} remaining (scoring {len(eval_target)}); "
           f"detector monitor-val={len(monitor)} -> {data_yaml}"
           + (" [train filenames shuffled — same frames, different listing order]" if shuffle_train else ""))
@@ -195,10 +200,16 @@ def evaluate(cfg: Config) -> str:
                        f"| {summary['f1@'+k]:.3f} | {summary['accuracy@'+k]:.3f} |")
         return "\n".join(out)
 
+    sampling = getattr(cfg.data, "sampling", "even")
+    sampling_desc = {
+        "even": "spread evenly across the dataset", "random": "picked at random",
+        "greedy": "greedy set-cover for per-class coverage",
+        "manifest": f"from manifest {getattr(cfg.data, 'manifest_file', '?')}",
+    }.get(sampling, sampling)
     md = [
         f"# Run report — {cfg.work.name}",
         "",
-        f"- **Annotated frames (input):** {len(annotated)} — spread evenly across the dataset",
+        f"- **Annotated frames (input):** {len(annotated)} — {sampling_desc} (`sampling: {sampling}`)",
         f"- **Auto-annotated (remaining):** {len(remaining)}  ·  **scored:** {len(eval_target)}",
         f"- **Detector:** multi-class YOLO  ·  confidence {cfg.infer.conf}",
         f"- **Predicted boxes:** {ca['num_pred']}  ·  **false positives:** {fp}  ·  **mean IoU:** {ca['mean_iou']}",

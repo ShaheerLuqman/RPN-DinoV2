@@ -1,0 +1,41 @@
+# Frame-selection config — doosan_tackweld_processed · 4,416 frames
+# Picks a diverse, non-redundant frame subset for annotation via frozen DINOv2
+# embeddings + k-center greedy — no labels or trained model used by the selection
+# itself (this dataset happens to already be labeled — that's only for the
+# downstream train-and-compare validation in docs/frame_selection.md #5, not
+# read by select_frames.py). Every choice below is the locked design from
+# docs/frame_selection.md, not picked ad hoc here.
+#
+# Run:
+#   python frame_extraction/select_frames.py --config configs/doosan_tackweld_frame_selection.yaml
+
+project:
+  root: auto
+
+source:
+  images_dir: "datasets/doosan_tackweld_processed"
+  image_ext: jpg
+  # videos_dir: "datasets/marmon_station_1/videos"   # alternative source — raw video instead of a frame folder
+  # video_ext: mkv
+
+selection:
+  keep_fraction: 0.05      # 5% of post-quality-filter candidate frames, global budget
+  bucket_delta: 0.10       # cosine-distance threshold for adaptive pre-bucketing (tuning constant)
+  seed_index: 0            # k-center greedy starting index into the pooled representative set
+
+quality_filter:
+  blur_thresh: 60.0              # Laplacian-variance floor — below this, dropped as blurry
+  exposure_range: [15.0, 240.0]  # acceptable mean-brightness range (0-255)
+  occlusion_std_thresh: 5.0      # brightness-std floor — near-uniform frame dropped as lens-occluded
+
+embedding:
+  model: facebook/dinov2-base   # frozen, no fine-tuning
+  device: cuda                  # cuda | cpu
+  batch_size: 32
+
+output:
+  run_dir: auto      # -> runs/frame_selection/<source-name> — everything below lands under here
+  cache_dir: auto    # -> <run_dir>/cache
+  out: auto          # -> <run_dir>/selected.json
+  stage_dir: auto    # -> <run_dir>/selected
+  stage: true        # materialize the selected frames as files (symlink/hardlink + labels + classes.txt)

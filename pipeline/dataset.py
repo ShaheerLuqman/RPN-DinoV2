@@ -7,6 +7,7 @@ Expects a flat directory of images (`*.png`) each with a sibling YOLO label file
 from __future__ import annotations
 
 import heapq
+import json
 import os
 import random
 import shutil
@@ -113,6 +114,30 @@ def greedy_annotate_split(images_dir: Path, ext: str, stems: list[str], nC: int,
     aset = set(selected)
     remaining = [s for s in stems if s not in aset]
     return selected, remaining
+
+
+def manifest_annotate_split(stems: list[str], manifest_path: Path) -> tuple[list[str], list[str]]:
+    """Pick the annotated (training) set from a `frame_extraction/select_frames.py`
+    manifest (`selected.json`) instead of even/random/greedy sampling — lets the
+    pipeline train on an externally-chosen frame subset (e.g. the embedding-diversity
+    selection from docs/frame_selection.md) for direct before/after comparison against
+    the same frame count picked by `sampling: even` (see `data.sampling: manifest`).
+
+    Manifest entries are `"<group>::<frame_id>"`; this pipeline's `images_dir` is
+    always a flat frame folder, i.e. select_frames.py's single "_all" group, where
+    `frame_id` already equals the stem exactly. `annotated` keeps the manifest's own
+    pick order (diversity-selection order), same as `greedy_annotate_split` keeps
+    `greedy_cover`'s pick order rather than dataset order."""
+    manifest = json.loads(Path(manifest_path).read_text())
+    annotated = [e["id"].split("::", 1)[1] for e in manifest["selected"]]
+    stem_set = set(stems)
+    missing = [s for s in annotated if s not in stem_set]
+    if missing:
+        raise ValueError(f"{manifest_path}: {len(missing)} manifest frame(s) not found among this "
+                         f"dataset's stems, e.g. {missing[:5]} — wrong images_dir for this manifest?")
+    aset = set(annotated)
+    remaining = [s for s in stems if s not in aset]
+    return annotated, remaining
 
 
 def even_subset(stems: list[str], k: int, sampling: str = "even",
